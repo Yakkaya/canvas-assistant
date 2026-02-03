@@ -17,3 +17,30 @@ def get_user_todo():
     r = requests.get(url, headers=HEADERS, timeout=20)
     r.raise_for_status()
     return r.json()
+
+
+def get_course(course_id: int) -> dict:
+    """Fetch course info including syllabus HTML."""
+    url = f"{BASE_URL.rstrip('/')}/api/v1/courses/{course_id}"
+    params = {"include[]": "syllabus_body"}
+    r = requests.get(url, headers=HEADERS, params=params, timeout=20)
+    r.raise_for_status()
+    return r.json()
+
+
+def get_file(file_id: int) -> bytes:
+    """Download a file from Canvas by file ID."""
+    # First get file metadata to get the download URL
+    url = f"{BASE_URL.rstrip('/')}/api/v1/files/{file_id}"
+    r = requests.get(url, headers=HEADERS, timeout=20)
+    r.raise_for_status()
+    file_info = r.json()
+
+    # Download the actual file content
+    download_url = file_info.get("url")
+    if not download_url:
+        raise ValueError(f"No download URL for file {file_id}")
+
+    r = requests.get(download_url, timeout=60)
+    r.raise_for_status()
+    return r.content

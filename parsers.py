@@ -45,6 +45,15 @@ def parse_todo_response(todo_json: list[dict]) -> StudentData:
             course_id=todo.course_id,
             context_name=todo.course_name
         )
+
+        # Derive course URL from assignment html_url
+        # e.g., "https://canvas.calpoly.edu/courses/172956/assignments/..." -> "https://canvas.calpoly.edu/courses/172956"
+        if not course.html_url and todo.assignment.html_url:
+            parts = todo.assignment.html_url.split("/courses/")
+            if len(parts) == 2:
+                course_path = parts[1].split("/")[0]
+                course.html_url = f"{parts[0]}/courses/{course_path}"
+
         data.add_course(course)
 
         # Add assignment
@@ -61,7 +70,7 @@ def parse_todo_response(todo_json: list[dict]) -> StudentData:
 # Keywords to match assignment names to categories
 CATEGORY_PATTERNS: dict[AssignmentCategory, list[str]] = {
     AssignmentCategory.HOMEWORK: [
-        r"\bhw\b", r"\bhomework\b", r"\bpset\b", r"\bproblem set\b",
+        r"\bhw\d*\b", r"\bhomework\b", r"\bpset\b", r"\bproblem set\b",
         r"\bassignment\s*\d", r"\bweekly\b"
     ],
     AssignmentCategory.PROJECT: [
@@ -147,53 +156,77 @@ def parse_syllabus_html(html: str, course_id: int) -> SyllabusInfo:
 def _extract_grading_weights(text: str) -> list[GradingCategory]:
     """Extract grading weights like 'Homework: 30%' from text."""
     categories: dict[AssignmentCategory, GradingCategory] = {}
+    matched_spans: list[tuple[int, int]] = []  # Track (start, end) to avoid double-counting
     text_lower = text.lower()
 
-    # Category keywords
+    # Category keywords - base categories
     category_keywords = (
-        r"homework|hw|projects?|exams?|quizzes?|labs?|"
-        r"participation|attendance|final\s*exam|midterm|reading"
+        r"homework|hw|assignments?|projects?|exams?|quizzes?|labs?|"
+        r"participation|attendance|final\s*exam|final|midterm|reading"
+    )
+
+    # Extended keywords that include numbered variants like "Exam 1", "Exam 2"
+    category_keywords_numbered = (
+        r"homework|hw|assignments?|projects?|exams?\s*\d*|quizzes?\s*\d*|labs?\s*\d*|"
+        r"participation|attendance|final\s*exam|final|midterm\s*\d*|reading\s*quizzes?"
     )
 
     # Patterns ordered by reliability (most specific first)
     patterns = [
+        # "Exam 1:\n20%" - category (possibly numbered) on one line, X% on next
+        rf"({category_keywords_numbered})\s*:?\s*\n\s*(\d+(?:\.\d+)?)\s*%",
         # "Labs (10) 10%" or "Projects (5) 40%" - category with count then percentage
         rf"({category_keywords})(?:\s*\(\d+\))?\s+(\d+(?:\.\d+)?)\s*%",
         # "Homework: 30%" or "Homework 30%"
         rf"({category_keywords})[:\s]+(\d+(?:\.\d+)?)\s*%",
-        # "30% Homework" or "30% - Labs"
-        rf"(\d+(?:\.\d+)?)\s*%\s*[-–]?\s*({category_keywords})",
+        # "30% Homework" or "30% - Labs" (no newlines allowed between % and category)
+        rf"(\d+(?:\.\d+)?)\s*%[ \t]*[-–]?[ \t]*({category_keywords})",
     ]
 
     for pattern in patterns:
-        matches = re.findall(pattern, text_lower)
-        for match in matches:
+        for match in re.finditer(pattern, text_lower):
+            match_start = match.start()
+
+            # Skip if this match overlaps with an existing match
+            match_end = match.end()
+            if any(not (match_end <= start or match_start >= end) for start, end in matched_spans):
+                continue
+
+            groups = match.groups()
             # Handle both orderings (category first or percentage first)
-            if match[0].replace(".", "").isdigit():
-                weight_str, name = match
+            if groups[0].replace(".", "").isdigit():
+                weight_str, name = groups
             else:
-                name, weight_str = match
+                name, weight_str = groups
 
             weight = float(weight_str) / 100.0
 
             # Skip "each X%" patterns (per-item weights, not totals)
             # These are typically small (<15%) and preceded by "each"
-            match_context = text_lower[max(0, text_lower.find(match[0]) - 20):
-                                       text_lower.find(match[0]) + len(match[0]) + len(match[1]) + 10]
+            match_context = text_lower[max(0, match_start - 20):match_start + len(match.group(0)) + 10]
             if "each" in match_context and weight < 0.15:
                 continue
 
-            # Clean up category name (handle "final exam" -> "final")
+            # Clean up category name (handle "final exam" -> "final", "exam 1" -> "exam")
             name = name.strip()
-            if "final" in name and "exam" in name:
-                name = "final"
+            # Remove trailing numbers for category mapping (but keep for display)
+            base_name = re.sub(r'\s*\d+$', '', name).strip()
+            if "final" in base_name and "exam" in base_name:
+                base_name = "final"
 
-            category = _name_to_category(name)
+            category = _name_to_category(base_name)
 
-            # Keep the larger weight for each category (totals > per-item)
-            if category not in categories or weight > categories[category].weight:
+            # Mark this span as matched
+            matched_spans.append((match_start, match_end))
+
+            # Accumulate weights for same category (e.g., Exam 1 + Exam 2 = total exam weight)
+            if category in categories:
+                categories[category].weight += weight
+            else:
+                # Use base category name for display (e.g., "Exam" not "Exam 1")
+                display_name = base_name.replace("_", " ").title()
                 categories[category] = GradingCategory(
-                    name=name.replace("_", " ").title(),
+                    name=display_name,
                     weight=weight,
                     assignment_category=category,
                     confidence=0.7,
@@ -208,15 +241,20 @@ def _name_to_category(name: str) -> AssignmentCategory:
     mapping = {
         "homework": AssignmentCategory.HOMEWORK,
         "hw": AssignmentCategory.HOMEWORK,
+        "assignment": AssignmentCategory.HOMEWORK,
+        "assignments": AssignmentCategory.HOMEWORK,
         "project": AssignmentCategory.PROJECT,
         "projects": AssignmentCategory.PROJECT,
         "exam": AssignmentCategory.EXAM,
         "exams": AssignmentCategory.EXAM,
         "quiz": AssignmentCategory.QUIZ,
         "quizzes": AssignmentCategory.QUIZ,
+        "reading quiz": AssignmentCategory.QUIZ,
+        "reading quizzes": AssignmentCategory.QUIZ,
         "lab": AssignmentCategory.LAB,
         "labs": AssignmentCategory.LAB,
         "participation": AssignmentCategory.PARTICIPATION,
+        "class participation": AssignmentCategory.PARTICIPATION,
         "attendance": AssignmentCategory.PARTICIPATION,
         "final": AssignmentCategory.FINAL,
         "midterm": AssignmentCategory.MIDTERM,

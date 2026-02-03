@@ -57,6 +57,9 @@ class Course:
     name: str  # e.g., "CSC-364-05-2262 - Introduction to Networked..."
     code: str  # e.g., "CSC-364"
 
+    # Canvas URL (e.g., "https://canvas.calpoly.edu/courses/172956")
+    html_url: Optional[str] = None
+
     # Syllabus data (populated after parsing)
     syllabus: Optional["SyllabusInfo"] = None
 
@@ -332,6 +335,7 @@ class StudentData:
                     "id": c.id,
                     "code": c.code,
                     "name": c.name,
+                    "html_url": c.html_url,
                     "has_syllabus": c.syllabus is not None,
                     "grading_weights": {
                         gc.assignment_category.value: gc.weight
@@ -353,6 +357,16 @@ class StudentData:
                     "html_url": a.html_url,
                 }
                 for a in self.assignments.values()
+            ],
+            "todo_items": [
+                {
+                    "assignment_id": t.assignment.id,
+                    "assignment_name": t.assignment.name,
+                    "course_id": t.course_id,
+                    "todo_type": t.todo_type,
+                    "html_url": t.html_url,
+                }
+                for t in self.todo_items
             ],
             "last_fetched": self.last_fetched.isoformat() if self.last_fetched else None,
         }
