@@ -6,11 +6,17 @@ This script demonstrates:
 2. Extracting grading weights and policies from syllabus PDFs
 3. Combining data for LLM context
 
-Run: python example_usage.py
+Run: python demo/example_usage.py
 """
 
 import json
 import os
+import sys
+from pathlib import Path
+
+# Add parent directory to path for imports
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
 from parsers import load_and_parse_todos, parse_syllabus_pdf
 
 
@@ -20,11 +26,13 @@ def demo_canvas_parsing():
     print("DEMO 1: Canvas API Data Parsing")
     print("=" * 60)
 
-    if not os.path.exists("raw_todo.json"):
-        print("  [!] raw_todo.json not found. Run get_raw_data.py first.")
+    # Look for raw_todo.json in parent directory
+    raw_todo_path = Path(__file__).parent.parent / "raw_todo.json"
+    if not raw_todo_path.exists():
+        print("  [!] raw_todo.json not found. Run demo/get_raw_data.py first.")
         return None
 
-    with open("raw_todo.json") as f:
+    with open(raw_todo_path) as f:
         raw_todos = json.load(f)
 
     student_data = load_and_parse_todos(raw_todos)
@@ -55,12 +63,12 @@ def demo_pdf_parsing():
     print("DEMO 2: Syllabus PDF Parsing")
     print("=" * 60)
 
-    syllabi_dir = "example_syllabi"
-    if not os.path.exists(syllabi_dir):
+    syllabi_dir = Path(__file__).parent.parent / "example_syllabi"
+    if not syllabi_dir.exists():
         print(f"  [!] {syllabi_dir}/ folder not found.")
         return []
 
-    pdf_files = [f for f in os.listdir(syllabi_dir) if f.endswith(".pdf")]
+    pdf_files = [f for f in syllabi_dir.iterdir() if f.suffix == ".pdf"]
     if not pdf_files:
         print(f"  [!] No PDF files found in {syllabi_dir}/")
         return []
@@ -68,8 +76,8 @@ def demo_pdf_parsing():
     print(f"\nFound {len(pdf_files)} syllabus PDFs:")
     parsed_syllabi = []
 
-    for pdf_file in sorted(pdf_files)[:3]:  # Demo first 3
-        pdf_path = os.path.join(syllabi_dir, pdf_file)
+    for pdf_path in sorted(pdf_files)[:3]:  # Demo first 3
+        pdf_file = pdf_path.name
         print(f"\n  --- {pdf_file} ---")
 
         syllabus = parse_syllabus_pdf(pdf_path, course_id=0)
