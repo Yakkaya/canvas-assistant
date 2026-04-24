@@ -8,6 +8,7 @@ Includes:
 - Assignment category inference
 """
 
+import os
 import re
 from datetime import datetime, timezone
 from typing import Optional
@@ -32,6 +33,29 @@ from models import (
 # =============================================================================
 # Canvas API Parsing
 # =============================================================================
+
+def parse_course(data: dict) -> Course:
+    """Parse a course from the Canvas /courses endpoint response."""
+    course_id = data["id"]
+    name = data.get("name", "")
+    # Build a short code from the course_code field (e.g. "CSC-364-05-2262" -> "CSC-364")
+    raw_code = data.get("course_code", "")
+    parts = raw_code.split("-")
+    if len(parts) >= 2:
+        code = f"{parts[0]}-{parts[1]}"
+    else:
+        code = raw_code
+
+    html_url = data.get("html_url") or (
+        f"{os.environ.get('CANVAS_BASE_URL', '').rstrip('/')}/courses/{course_id}"
+    )
+    return Course(id=course_id, name=name, code=code, html_url=html_url)
+
+
+def parse_assignment(data: dict) -> Assignment:
+    """Parse an assignment from the Canvas /courses/{id}/assignments endpoint response."""
+    return Assignment.from_canvas_api(data)
+
 
 def parse_todo_response(todo_json: list[dict]) -> StudentData:
     """Parse the /users/self/todo endpoint response into StudentData."""

@@ -178,9 +178,28 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
 
     elif name == "refresh_canvas_data":
         try:
+            # Fetch todo items (pending submissions)
             raw = canvas_api.get_user_todo()
             data = parsers.load_and_parse_todos(raw)
             store.save_student(STUDENT_ID, os.getenv("CANVAS_TOKEN", ""), "Student")
+
+            # Fetch all enrolled courses and their upcoming assignments
+            all_courses = canvas_api.get_courses()
+            for course_raw in all_courses:
+                course_id = course_raw["id"]
+                course = parsers.parse_course(course_raw)
+                data.add_course(course)
+
+                # Fetch upcoming assignments for this course
+                try:
+                    for a_raw in canvas_api.get_course_assignments(course_id):
+                        assignment = parsers.parse_assignment(a_raw)
+                        data.add_assignment(assignment)
+                except Exception:
+                    pass
+
+            # Enrich categories for newly added assignments
+            parsers.enrich_assignment_categories(data)
 
             # Fetch and parse syllabus for each course
             syllabi_parsed = 0
