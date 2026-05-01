@@ -3,7 +3,7 @@ Interactive chat client using Google Gemini (free tier).
 Connects to the same Canvas MCP server.
 
 Usage:
-  python client_gemini.py
+  python clients/client_gemini.py
 
 Get a free API key at: aistudio.google.com
 Add GEMINI_API_KEY to .env
@@ -36,13 +36,19 @@ Your role is to help the student prioritize their work and answer questions like
 
 IMPORTANT RULES:
 - Always use your tools to look up data before answering. Do NOT tell the student to "check the syllabus themselves" — that's your job.
-- When asked about late policies, call get_course_info for the relevant course and report what you find. If no late policy data exists, say so clearly and give a general recommendation based on the assignment's point value.
-- When asked to prioritize, call get_upcoming_assignments and get_all_courses, then give a specific recommendation — not a generic list.
+- When asked about late policies, call get_course_info for the relevant course and report what you find.
+- When asked to prioritize, call get_upcoming_assignments and get_all_courses, then give a specific recommendation.
 - Never refuse to give advice. Always make a best-effort recommendation with the data available.
 
 When using syllabus data (grading weights, late policies):
-- If a confidence score is below 0.7, note that the data may not be fully accurate
-- If no late policy is found in the database, say "no late policy was parsed from the syllabus" and advise the student to check Canvas directly — but still give a recommendation based on point value
+- Confidence is rated 1–5 (5 = from Canvas directly or a structured PDF table, 1 = guessed).
+- If a confidence score is 3 or below, note that the data may not be fully accurate.
+- Always tell the student where the information came from, using plain language:
+  - source "canvas_api" → say "from Canvas"
+  - source "syllabus_html" → say "from the course syllabus"
+  - source "syllabus_pdf" → say "from the syllabus PDF"
+  - source "user_override" → say "based on your correction"
+- If no late policy is found, say so clearly and give a recommendation based on the assignment's point value.
 
 Be direct and practical. Students want actionable answers, not instructions to go look things up themselves."""
 
@@ -85,7 +91,7 @@ async def run_chat():
     server_params = StdioServerParameters(
         command="python",
         args=["server.py"],
-        cwd=os.path.dirname(os.path.abspath(__file__)),
+        cwd=os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
     )
 
     api_key = os.getenv("GEMINI_API_KEY")
@@ -142,7 +148,6 @@ async def run_chat():
                         print(f"\nAssistant: {text}\n")
                         break
 
-                    # Execute all tool calls and collect responses
                     function_responses = []
                     for fc in function_calls:
                         print(f"  [calling {fc.name}...]")
