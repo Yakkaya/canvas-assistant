@@ -33,7 +33,7 @@ def main():
     print("=" * 60)
 
     # 1. Parse existing data
-    raw_path = Path(__file__).parent.parent / "raw_todo.json"
+    raw_path = Path(__file__).parent / "raw_todo.json"
     if not raw_path.exists():
         print("[!] raw_todo.json not found. Run demo/get_raw_data.py first.")
         return

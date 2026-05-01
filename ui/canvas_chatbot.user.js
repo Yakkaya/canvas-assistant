@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Canvas Assistant
 // @namespace    http://tampermonkey.net/
-// @version      1.0
+// @version      1.1
 // @description  AI-powered Canvas study assistant — floating chatbot widget
 // @author       you
 // @match        *://*.instructure.com/*
@@ -14,6 +14,7 @@
     'use strict';
 
     const API_URL = 'http://localhost:8000/chat';
+    const MANUAL_UPDATE_URL = 'http://localhost:8000/manual-update';
     const SESSION_KEY = 'canvas_assistant_session_id';
     const HISTORY_KEY = 'canvas_assistant_history';
 
@@ -197,6 +198,86 @@
         #ca-send:hover { background: #055a80; }
         #ca-send:disabled { background: #9ca3af; cursor: not-allowed; }
         #ca-send svg { fill: white; width: 16px; height: 16px; }
+
+        #ca-edit-btn {
+            background: none;
+            border: none;
+            color: rgba(255,255,255,0.65);
+            cursor: pointer;
+            font-size: 18px;
+            line-height: 1;
+            padding: 3px 7px;
+            border-radius: 4px;
+            font-family: inherit;
+        }
+        #ca-edit-btn:hover { color: white; background: rgba(255,255,255,0.15); }
+
+        #ca-form-panel {
+            display: none;
+            flex-direction: column;
+            flex: 1;
+            overflow-y: auto;
+            padding: 14px 16px;
+            gap: 10px;
+        }
+        #ca-form-panel.ca-form-visible { display: flex; }
+        .ca-form-group {
+            display: flex;
+            flex-direction: column;
+            gap: 5px;
+        }
+        .ca-form-group > span {
+            font-size: 11px;
+            font-weight: 700;
+            color: #555;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+        .ca-fi {
+            border: 1.5px solid #d1d5db;
+            border-radius: 7px;
+            padding: 7px 10px;
+            font-family: inherit;
+            font-size: 13.5px;
+            outline: none;
+            color: #1a1a1a;
+            width: 100%;
+            box-sizing: border-box;
+            background: white;
+        }
+        .ca-fi:focus { border-color: #0770A3; }
+        .ca-fi-check {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 13.5px;
+            color: #1a1a1a;
+            cursor: pointer;
+            padding: 4px 0;
+        }
+        #ca-form-submit {
+            background: #0770A3;
+            color: white;
+            border: none;
+            border-radius: 9px;
+            padding: 10px;
+            font-size: 14px;
+            font-family: inherit;
+            font-weight: 600;
+            cursor: pointer;
+            transition: background 0.15s;
+            margin-top: 2px;
+        }
+        #ca-form-submit:hover { background: #055a80; }
+        #ca-form-submit:disabled { background: #9ca3af; cursor: not-allowed; }
+        #ca-form-status {
+            font-size: 13px;
+            text-align: center;
+            min-height: 18px;
+        }
+        .ca-status-success { color: #16a34a; }
+        .ca-status-error { color: #dc2626; }
+        .ca-status-info { color: #888; }
     `;
     document.head.appendChild(style);
 
@@ -218,9 +299,26 @@
                 <svg viewBox="0 0 24 24"><path d="M12 3L1 9l11 6 9-4.91V17h2V9L12 3zm0 12.08L4.35 11 12 7.5 19.65 11 12 15.08zM1 17l11 6 11-6-2-1.09-9 4.9-9-4.9L1 17z"/></svg>
                 Canvas Assistant
             </div>
-            <button id="ca-clear-btn" title="Clear conversation">Clear</button>
+            <div style="display:flex;gap:4px;align-items:center">
+                <button id="ca-edit-btn" title="Update course data">✏</button>
+                <button id="ca-clear-btn" title="Clear conversation">Clear</button>
+            </div>
         </div>
         <div id="ca-messages"></div>
+        <div id="ca-form-panel">
+            <div class="ca-form-group">
+                <span>Update type</span>
+                <select class="ca-fi" id="ca-form-type">
+                    <option value="">Select…</option>
+                    <option value="grading_weight">Grading Weight</option>
+                    <option value="late_policy">Late Policy</option>
+                    <option value="assignment_category">Assignment Category</option>
+                </select>
+            </div>
+            <div id="ca-form-fields"></div>
+            <button id="ca-form-submit" style="display:none">Save</button>
+            <div id="ca-form-status"></div>
+        </div>
         <div id="ca-input-area">
             <textarea id="ca-input" placeholder="Ask about assignments, deadlines, grades…" rows="1"></textarea>
             <button id="ca-send">
@@ -332,6 +430,171 @@
         sendBtn.disabled = false;
         inputEl.focus();
     }
+
+    // -------------------------------------------------------------------------
+    // Manual data entry form
+    // -------------------------------------------------------------------------
+    const formPanel = panel.querySelector('#ca-form-panel');
+    const formType = panel.querySelector('#ca-form-type');
+    const formFields = panel.querySelector('#ca-form-fields');
+    const formSubmit = panel.querySelector('#ca-form-submit');
+    const formStatus = panel.querySelector('#ca-form-status');
+    const editBtn = panel.querySelector('#ca-edit-btn');
+    const inputArea = panel.querySelector('#ca-input-area');
+
+    let formVisible = false;
+
+    function showFormStatus(msg, type) {
+        formStatus.textContent = msg;
+        formStatus.className = 'ca-status-' + type;
+    }
+
+    const CATEGORY_OPTIONS = `
+        <option value="homework">Homework</option>
+        <option value="project">Project</option>
+        <option value="exam">Exam</option>
+        <option value="quiz">Quiz</option>
+        <option value="lab">Lab</option>
+        <option value="participation">Participation</option>
+        <option value="reading">Reading</option>
+        <option value="discussion">Discussion</option>
+        <option value="final">Final</option>
+        <option value="midterm">Midterm</option>
+        <option value="other">Other</option>`;
+
+    function renderFormFields(type) {
+        formStatus.textContent = '';
+        if (type === 'grading_weight') {
+            formFields.innerHTML = `
+                <div class="ca-form-group">
+                    <span>Course ID</span>
+                    <input class="ca-fi" type="number" id="ca-f-course-id" placeholder="e.g. 172956">
+                </div>
+                <div class="ca-form-group">
+                    <span>Category</span>
+                    <select class="ca-fi" id="ca-f-category">${CATEGORY_OPTIONS}</select>
+                </div>
+                <div class="ca-form-group">
+                    <span>Weight %</span>
+                    <input class="ca-fi" type="number" id="ca-f-weight" min="0" max="100" placeholder="e.g. 30">
+                </div>`;
+        } else if (type === 'late_policy') {
+            formFields.innerHTML = `
+                <div class="ca-form-group">
+                    <span>Course ID</span>
+                    <input class="ca-fi" type="number" id="ca-f-course-id" placeholder="e.g. 172956">
+                </div>
+                <div class="ca-form-group">
+                    <label class="ca-fi-check">
+                        <input type="checkbox" id="ca-f-allows-late" checked> Allows late submissions
+                    </label>
+                </div>
+                <div class="ca-form-group">
+                    <span>Penalty per day % (optional)</span>
+                    <input class="ca-fi" type="number" id="ca-f-penalty" min="0" max="100" placeholder="e.g. 10">
+                </div>
+                <div class="ca-form-group">
+                    <span>Max days late (optional)</span>
+                    <input class="ca-fi" type="number" id="ca-f-max-days" min="0" placeholder="e.g. 5">
+                </div>`;
+        } else if (type === 'assignment_category') {
+            formFields.innerHTML = `
+                <div class="ca-form-group">
+                    <span>Assignment ID</span>
+                    <input class="ca-fi" type="number" id="ca-f-assignment-id" placeholder="e.g. 123456">
+                </div>
+                <div class="ca-form-group">
+                    <span>Category</span>
+                    <select class="ca-fi" id="ca-f-category">${CATEGORY_OPTIONS}</select>
+                </div>`;
+        } else {
+            formFields.innerHTML = '';
+        }
+        formSubmit.style.display = type ? 'block' : 'none';
+    }
+
+    function submitForm() {
+        const type = formType.value;
+        if (!type) { showFormStatus('Select an update type.', 'error'); return; }
+
+        let course_id = null;
+        const data = {};
+
+        if (type === 'grading_weight') {
+            course_id = parseInt(panel.querySelector('#ca-f-course-id').value);
+            data.category = panel.querySelector('#ca-f-category').value;
+            data.weight_pct = parseFloat(panel.querySelector('#ca-f-weight').value);
+            if (!course_id || !data.category || isNaN(data.weight_pct)) {
+                showFormStatus('All fields are required.', 'error'); return;
+            }
+        } else if (type === 'late_policy') {
+            course_id = parseInt(panel.querySelector('#ca-f-course-id').value);
+            data.allows_late = panel.querySelector('#ca-f-allows-late').checked;
+            const p = panel.querySelector('#ca-f-penalty').value;
+            const m = panel.querySelector('#ca-f-max-days').value;
+            if (p) data.penalty_per_day = parseFloat(p);
+            if (m) data.max_days_late = parseInt(m);
+            if (!course_id) { showFormStatus('Course ID is required.', 'error'); return; }
+        } else if (type === 'assignment_category') {
+            data.assignment_id = parseInt(panel.querySelector('#ca-f-assignment-id').value);
+            data.category = panel.querySelector('#ca-f-category').value;
+            if (!data.assignment_id || !data.category) {
+                showFormStatus('All fields are required.', 'error'); return;
+            }
+        }
+
+        formSubmit.disabled = true;
+        showFormStatus('Saving…', 'info');
+
+        GM_xmlhttpRequest({
+            method: 'POST',
+            url: MANUAL_UPDATE_URL,
+            headers: { 'Content-Type': 'application/json' },
+            data: JSON.stringify({ update_type: type, course_id, data }),
+            onload: (res) => {
+                formSubmit.disabled = false;
+                if (res.status < 400) {
+                    showFormStatus('✓ Saved!', 'success');
+                    setTimeout(() => {
+                        formType.value = '';
+                        formFields.innerHTML = '';
+                        formSubmit.style.display = 'none';
+                        formStatus.textContent = '';
+                    }, 2000);
+                } else {
+                    try {
+                        const body = JSON.parse(res.responseText);
+                        showFormStatus('Error: ' + (body.error || res.status), 'error');
+                    } catch (e) {
+                        showFormStatus('Error: ' + res.status, 'error');
+                    }
+                }
+            },
+            onerror: () => {
+                formSubmit.disabled = false;
+                showFormStatus('Network error — is the server running?', 'error');
+            },
+        });
+    }
+
+    function toggleForm() {
+        formVisible = !formVisible;
+        if (formVisible) {
+            messagesEl.style.display = 'none';
+            inputArea.style.display = 'none';
+            formPanel.classList.add('ca-form-visible');
+            editBtn.style.color = 'white';
+        } else {
+            messagesEl.style.display = '';
+            inputArea.style.display = '';
+            formPanel.classList.remove('ca-form-visible');
+            editBtn.style.color = '';
+        }
+    }
+
+    formType.addEventListener('change', () => renderFormFields(formType.value));
+    formSubmit.addEventListener('click', submitForm);
+    editBtn.addEventListener('click', toggleForm);
 
     // -------------------------------------------------------------------------
     // Event listeners

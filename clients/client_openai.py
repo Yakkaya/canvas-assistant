@@ -1,9 +1,9 @@
 """
-Interactive chat client using OpenAI instead of Anthropic.
+Interactive chat client using OpenAI GPT-4o.
 Connects to the same Canvas MCP server.
 
 Usage:
-  python client_openai.py
+  python clients/client_openai.py
 
 Requires OPENAI_API_KEY in .env
 """
@@ -31,9 +31,21 @@ Your role is to help the student prioritize their work and answer questions like
 - "Is it better to focus on my midterm or my project?"
 - "What's due tomorrow?"
 
+IMPORTANT RULES:
+- Always use your tools to look up data before answering. Do NOT tell the student to "check the syllabus themselves" — that's your job.
+- When asked about late policies, call get_course_info for the relevant course and report what you find.
+- When asked to prioritize, call get_upcoming_assignments and get_all_courses, then give a specific recommendation.
+- Never refuse to give advice. Always make a best-effort recommendation with the data available.
+
 When using syllabus data (grading weights, late policies):
-- If a confidence score is below 0.7, note that the data may not be fully accurate
-- If no syllabus data exists for a course, mention that grading weights are unavailable for it
+- Confidence is rated 1–5 (5 = from Canvas directly or a structured PDF table, 1 = guessed).
+- If a confidence score is 3 or below, note that the data may not be fully accurate.
+- Always tell the student where the information came from, using plain language:
+  - source "canvas_api" → say "from Canvas"
+  - source "syllabus_html" → say "from the course syllabus"
+  - source "syllabus_pdf" → say "from the syllabus PDF"
+  - source "user_override" → say "based on your correction"
+- If no syllabus data exists for a course, mention that grading weights are unavailable.
 
 Be direct and practical. Students want actionable answers."""
 
@@ -54,7 +66,7 @@ async def run_chat():
     server_params = StdioServerParameters(
         command="python",
         args=["server.py"],
-        cwd=os.path.dirname(os.path.abspath(__file__)),
+        cwd=os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
     )
 
     api_key = os.getenv("OPENAI_API_KEY")
@@ -103,15 +115,12 @@ async def run_chat():
                     message = choice.message
 
                     if not message.tool_calls:
-                        # Final text response
                         print(f"\nAssistant: {message.content}\n")
                         messages.append({"role": "assistant", "content": message.content})
                         break
 
-                    # Append assistant message with tool calls
                     messages.append(message)
 
-                    # Execute each tool call
                     for tc in message.tool_calls:
                         print(f"  [calling {tc.function.name}...]")
                         try:

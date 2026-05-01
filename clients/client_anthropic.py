@@ -2,7 +2,7 @@
 Interactive chat client: bridges the Canvas MCP server with the Anthropic API.
 
 Usage:
-  python client.py
+  python clients/client_anthropic.py
 
 Requires ANTHROPIC_API_KEY in .env
 """
@@ -30,10 +30,21 @@ Your role is to help the student prioritize their work and answer questions like
 - "Is it better to focus on my midterm or my project?"
 - "What's due tomorrow?"
 
+IMPORTANT RULES:
+- Always use your tools to look up data before answering. Do NOT tell the student to "check the syllabus themselves" — that's your job.
+- When asked about late policies, call get_course_info for the relevant course and report what you find.
+- When asked to prioritize, call get_upcoming_assignments and get_all_courses, then give a specific recommendation.
+- Never refuse to give advice. Always make a best-effort recommendation with the data available.
+
 When using syllabus data (grading weights, late policies):
-- If a confidence score is below 0.7, note that the data may not be fully accurate
-- If no syllabus data exists for a course, mention that grading weights are unavailable for it
-- Confidence of 0.85 = extracted from a table (reliable), 0.70 = regex match, 0.40 = keyword only
+- Confidence is rated 1–5 (5 = from Canvas directly or a structured PDF table, 1 = guessed).
+- If a confidence score is 3 or below, note that the data may not be fully accurate.
+- Always tell the student where the information came from, using plain language:
+  - source "canvas_api" → say "from Canvas"
+  - source "syllabus_html" → say "from the course syllabus"
+  - source "syllabus_pdf" → say "from the syllabus PDF"
+  - source "user_override" → say "based on your correction"
+- If no syllabus data exists for a course, mention that grading weights are unavailable.
 
 Be direct and practical. Students want actionable answers.
 When you call tools, don't narrate every call — just use the data to give a good answer."""
@@ -52,7 +63,7 @@ async def run_chat():
     server_params = StdioServerParameters(
         command="python",
         args=["server.py"],
-        cwd=os.path.dirname(os.path.abspath(__file__)),
+        cwd=os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
     )
 
     api_key = os.getenv("ANTHROPIC_API_KEY")
@@ -103,13 +114,11 @@ async def run_chat():
                     text_blocks = [b for b in response.content if b.type == "text"]
 
                     if not tool_calls:
-                        # Final text response
                         final_text = " ".join(b.text for b in text_blocks).strip()
                         print(f"\nAssistant: {final_text}\n")
                         messages.append({"role": "assistant", "content": response.content})
                         break
 
-                    # Execute all tool calls
                     messages.append({"role": "assistant", "content": response.content})
                     tool_results = []
 

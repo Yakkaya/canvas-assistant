@@ -64,6 +64,107 @@ class MongoStore:
         self.client.close()
 
     # =========================================================================
+    # Manual data corrections (student overrides)
+    # =========================================================================
+
+    def apply_manual_update(
+        self, student_id: str, update_type: str, course_id: int | None, data: dict
+    ) -> None:
+        """Apply a student-supplied data correction, stamped as USER_OVERRIDE."""
+        if update_type == "grading_weight":
+            category_str = data.get("category", "other").lower()
+            try:
+                assignment_cat = AssignmentCategory(category_str)
+            except ValueError:
+                assignment_cat = AssignmentCategory.OTHER
+
+            gc_doc = {
+                "name": category_str.title(),
+                "weight": float(data.get("weight_pct", 0)) / 100.0,
+                "assignment_category": assignment_cat.value,
+                "drop_lowest": 0,
+                "source": DataSource.USER_OVERRIDE.value,
+                "confidence": 5,
+            }
+
+            course_doc = self.courses.find_one({"_id": course_id})
+            if not course_doc:
+                raise ValueError(f"Course {course_id} not found")
+
+            syllabus = course_doc.get("syllabus") or {
+                "grading_categories": [],
+                "grading_scale": {},
+                "source": DataSource.USER_OVERRIDE.value,
+            }
+            cats = syllabus.get("grading_categories", [])
+            for i, cat in enumerate(cats):
+                if cat.get("assignment_category") == assignment_cat.value:
+                    cats[i] = gc_doc
+                    break
+            else:
+                cats.append(gc_doc)
+            syllabus["grading_categories"] = cats
+
+            self.courses.update_one(
+                {"_id": course_id},
+                {"$set": {"syllabus": syllabus, "updated_at": datetime.now(timezone.utc)}},
+            )
+
+        elif update_type == "late_policy":
+            lp_doc = {
+                "allows_late": bool(data.get("allows_late", True)),
+                "penalty_per_day": (
+                    float(data["penalty_per_day"]) / 100.0
+                    if data.get("penalty_per_day") is not None
+                    else None
+                ),
+                "penalty_type": "percentage",
+                "max_days_late": data.get("max_days_late"),
+                "grace_period_hours": 0,
+                "raw_text": None,
+                "source": DataSource.USER_OVERRIDE.value,
+                "confidence": 5,
+            }
+
+            course_doc = self.courses.find_one({"_id": course_id})
+            if not course_doc:
+                raise ValueError(f"Course {course_id} not found")
+
+            syllabus = course_doc.get("syllabus") or {
+                "grading_categories": [],
+                "grading_scale": {},
+                "source": DataSource.USER_OVERRIDE.value,
+            }
+            syllabus["late_policy"] = lp_doc
+
+            self.courses.update_one(
+                {"_id": course_id},
+                {"$set": {"syllabus": syllabus, "updated_at": datetime.now(timezone.utc)}},
+            )
+
+        elif update_type == "assignment_category":
+            assignment_id = int(data.get("assignment_id", 0))
+            category_str = data.get("category", "").lower()
+            try:
+                category = AssignmentCategory(category_str)
+            except ValueError:
+                raise ValueError(f"Invalid category: {category_str}")
+
+            result = self.assignments.update_one(
+                {"student_id": student_id, "assignment_id": assignment_id},
+                {"$set": {
+                    "category": category.value,
+                    "confidence": 5,
+                    "source": DataSource.USER_OVERRIDE.value,
+                }},
+            )
+            if result.matched_count == 0:
+                raise ValueError(f"Assignment {assignment_id} not found")
+
+        else:
+            raise ValueError(f"Unknown update_type: {update_type}")
+
+    # =========================================================================
     # Course operations (shared data)
     # =========================================================================
 
@@ -339,7 +440,7 @@ class MongoStore:
                 assignment_category=AssignmentCategory(gc["assignment_category"]),
                 drop_lowest=gc.get("drop_lowest", 0),
                 source=DataSource(gc.get("source", "syllabus_html")),
-                confidence=gc.get("confidence", 0.7),
+                confidence=gc.get("confidence", 4),
             )
             for gc in doc.get("grading_categories", [])
         ]
@@ -354,7 +455,7 @@ class MongoStore:
                 grace_period_hours=lp.get("grace_period_hours", 0),
                 raw_text=lp.get("raw_text"),
                 source=DataSource(lp.get("source", "syllabus_html")),
-                confidence=lp.get("confidence", 0.5),
+                confidence=lp.get("confidence", 3),
             )
         s.source = DataSource(doc.get("source", "syllabus_html"))
         s.parsed_at = doc.get("parsed_at")
@@ -386,6 +487,6 @@ class MongoStore:
             quiz_id=doc.get("quiz_id"),
             category=AssignmentCategory(doc["category"]) if doc.get("category") else None,
             weight_percentage=doc.get("weight_percentage"),
-            confidence=doc.get("confidence", 1.0),
+            confidence=doc.get("confidence", 5),
             source=DataSource(doc.get("source", "canvas_api")),
         )

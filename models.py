@@ -124,7 +124,7 @@ class Assignment:
 
     # Metadata
     source: DataSource = DataSource.CANVAS_API
-    confidence: float = 1.0  # 0-1, lower if data is inferred
+    confidence: int = 5  # 1-5, lower if data is inferred
 
     @classmethod
     def from_canvas_api(cls, data: dict) -> "Assignment":
@@ -204,7 +204,7 @@ class GradingCategory:
 
     # Metadata
     source: DataSource = DataSource.SYLLABUS_HTML
-    confidence: float = 1.0
+    confidence: int = 5
 
 
 @dataclass
@@ -220,7 +220,7 @@ class LatePolicy:
     raw_text: Optional[str] = None
 
     source: DataSource = DataSource.SYLLABUS_HTML
-    confidence: float = 1.0
+    confidence: int = 5
 
 
 @dataclass
@@ -233,7 +233,7 @@ class AttendancePolicy:
 
     raw_text: Optional[str] = None
     source: DataSource = DataSource.SYLLABUS_HTML
-    confidence: float = 1.0
+    confidence: int = 5
 
 
 @dataclass
@@ -249,7 +249,7 @@ class SyllabusDate:
     conflicts_with_canvas: bool = False
 
     source: DataSource = DataSource.SYLLABUS_HTML
-    confidence: float = 1.0
+    confidence: int = 5
 
 
 @dataclass

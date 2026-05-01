@@ -63,8 +63,15 @@ IMPORTANT RULES:
 - Never refuse to give advice. Always make a best-effort recommendation with the data available.
 
 When using syllabus data (grading weights, late policies):
-- If a confidence score is below 0.7, note that the data may not be fully accurate
-- If no late policy is found, say so and advise the student to check Canvas directly
+- Confidence is rated 1–5 (5 = from Canvas directly or a structured PDF table, 1 = guessed).
+- If a confidence score is 3 or below, note that the data may not be fully accurate.
+- Always tell the student where the information came from, using plain language:
+  - source "canvas_api" → say "from Canvas"
+  - source "syllabus_html" → say "from the course syllabus"
+  - source "syllabus_pdf" → say "from the syllabus PDF"
+  - source "user_override" → say "based on your correction"
+- If sources differ across categories, note each one individually.
+- If no late policy is found, say so and advise the student to check Canvas directly.
 
 Be direct and practical. Students want actionable answers, not instructions to go look things up themselves."""
 
@@ -300,6 +307,30 @@ def run_chat_turn(session_id: str, message) -> str:
         response = chat_obj.send_message(function_responses)
 
 
+async def manual_update(request: Request) -> JSONResponse:
+    body = await request.json()
+    update_type = body.get("update_type", "")
+    course_id = body.get("course_id")
+    data = body.get("data", {})
+
+    valid_types = ("grading_weight", "late_policy", "assignment_category")
+    if update_type not in valid_types:
+        return JSONResponse(
+            {"error": f"update_type must be one of: {', '.join(valid_types)}"},
+            status_code=400,
+        )
+    if update_type in ("grading_weight", "late_policy") and not course_id:
+        return JSONResponse({"error": "course_id is required"}, status_code=400)
+
+    try:
+        store.apply_manual_update(STUDENT_ID, update_type, course_id, data)
+        return JSONResponse({"status": "ok"})
+    except ValueError as e:
+        return JSONResponse({"error": str(e)}, status_code=400)
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
 async def chat(request: Request) -> JSONResponse:
     body = await request.json()
     message = (body.get("message") or "").strip()
@@ -312,7 +343,10 @@ async def chat(request: Request) -> JSONResponse:
     return JSONResponse({"reply": reply, "session_id": session_id})
 
 
-app = Starlette(routes=[Route("/chat", chat, methods=["POST"])])
+app = Starlette(routes=[
+    Route("/chat", chat, methods=["POST"]),
+    Route("/manual-update", manual_update, methods=["POST"]),
+])
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],

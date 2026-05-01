@@ -26,8 +26,7 @@ def demo_canvas_parsing():
     print("DEMO 1: Canvas API Data Parsing")
     print("=" * 60)
 
-    # Look for raw_todo.json in parent directory
-    raw_todo_path = Path(__file__).parent.parent / "raw_todo.json"
+    raw_todo_path = Path(__file__).parent / "raw_todo.json"
     if not raw_todo_path.exists():
         print("  [!] raw_todo.json not found. Run demo/get_raw_data.py first.")
         return None
@@ -99,9 +98,9 @@ def demo_pdf_parsing():
         if syllabus.late_policy:
             lp = syllabus.late_policy
             if lp.allows_late:
-                print(f"  Late Policy: Allowed (confidence: {lp.confidence:.0%})")
+                print(f"  Late Policy: Allowed (confidence: {lp.confidence}/5)")
             else:
-                print(f"  Late Policy: NOT allowed (confidence: {lp.confidence:.0%})")
+                print(f"  Late Policy: NOT allowed (confidence: {lp.confidence}/5)")
         else:
             print("  Late Policy: Not found")
 

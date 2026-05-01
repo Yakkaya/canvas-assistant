@@ -130,9 +130,9 @@ def infer_assignment_category(name: str) -> tuple[AssignmentCategory, float]:
     for category, patterns in CATEGORY_PATTERNS.items():
         for pattern in patterns:
             if re.search(pattern, name_lower):
-                return category, 0.8  # High confidence on keyword match
+                return category, 4  # High confidence on keyword match
 
-    return AssignmentCategory.OTHER, 0.3  # Low confidence default
+    return AssignmentCategory.OTHER, 1  # Very low confidence default
 
 
 def enrich_assignment_categories(data: StudentData) -> None:
@@ -253,7 +253,7 @@ def _extract_grading_weights(text: str) -> list[GradingCategory]:
                     name=display_name,
                     weight=weight,
                     assignment_category=category,
-                    confidence=0.7,
+                    confidence=4,
                 )
 
     return list(categories.values())
@@ -296,7 +296,7 @@ def _extract_late_policy(text: str) -> Optional[LatePolicy]:
         return LatePolicy(
             allows_late=False,
             raw_text=_extract_context(text, "late", 200),
-            confidence=0.8,
+            confidence=4,
         )
 
     # Look for penalty patterns
@@ -314,7 +314,7 @@ def _extract_late_policy(text: str) -> Optional[LatePolicy]:
             penalty_per_day=penalty / 100 if penalty > 1 else penalty,
             penalty_type="percentage",
             raw_text=_extract_context(text, "late", 200),
-            confidence=0.6,
+            confidence=3,
         )
 
     # If "late" mentioned but no clear policy, flag it
@@ -322,7 +322,7 @@ def _extract_late_policy(text: str) -> Optional[LatePolicy]:
         return LatePolicy(
             allows_late=True,  # Assume yes unless explicitly stated
             raw_text=_extract_context(text, "late", 200),
-            confidence=0.4,
+            confidence=2,
         )
 
     return None
@@ -497,7 +497,7 @@ def _extract_grading_from_tables(tables: list[list[list[str]]]) -> list[GradingC
                                 weight=weight,
                                 assignment_category=category,
                                 source=DataSource.SYLLABUS_PDF,
-                                confidence=0.85,  # Higher confidence from table
+                                confidence=5,  # Highest confidence from structured table
                             ))
                         break
 
@@ -526,7 +526,7 @@ def resolve_date_conflicts(
             syllabus_date.canvas_assignment_id = assignment.id
 
             # Lower confidence since there's a conflict
-            assignment.confidence = min(assignment.confidence, 0.7)
+            assignment.confidence = min(assignment.confidence, 4)
 
     return assignment
 
