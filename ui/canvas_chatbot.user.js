@@ -15,6 +15,7 @@
 
     const API_URL = 'http://localhost:8000/chat';
     const MANUAL_UPDATE_URL = 'http://localhost:8000/manual-update';
+    const FORM_DATA_URL = 'http://localhost:8000/form-data';
     const SESSION_KEY = 'canvas_assistant_session_id';
     const HISTORY_KEY = 'canvas_assistant_history';
 
@@ -352,13 +353,36 @@
         scrollToBottom();
     }
 
+    function linkify(text) {
+        // Escape HTML entities first
+        const escaped = text
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;');
+
+        // Markdown links: [label](url) → <a href="url">label</a>
+        const mdLinked = escaped.replace(
+            /\[([^\]]+)\]\((https?:\/\/[^)]+)\)/g,
+            '<a href="$2" target="_blank" rel="noopener" style="color:#0770A3;text-decoration:underline;">$1</a>'
+        );
+
+        // Bare URLs (not already inside an href="...") — stop before trailing punctuation
+        const bareLinked = mdLinked.replace(
+            /(?<!href=")(https?:\/\/[^\s<>"']+?)([.,;:!?)]*(?:\s|$))/g,
+            '<a href="$1" target="_blank" rel="noopener" style="color:#0770A3;text-decoration:underline;word-break:break-all;">$1</a>$2'
+        );
+
+        // Preserve newlines as <br>
+        return bareLinked.replace(/\n/g, '<br>');
+    }
+
     function appendBubble(role, text, scroll = true) {
         const emptyEl = messagesEl.querySelector('.ca-empty');
         if (emptyEl) emptyEl.remove();
 
         const el = document.createElement('div');
         el.className = `ca-msg ca-${role}`;
-        el.textContent = text;
+        el.innerHTML = linkify(text);
         messagesEl.appendChild(el);
         if (scroll) scrollToBottom();
         return el;
@@ -443,6 +467,7 @@
     const inputArea = panel.querySelector('#ca-input-area');
 
     let formVisible = false;
+    let cachedFormData = null;  // { courses: [{id, label}], assignments: [{id, label, course_id}] }
 
     function showFormStatus(msg, type) {
         formStatus.textContent = msg;
@@ -462,13 +487,27 @@
         <option value="midterm">Midterm</option>
         <option value="other">Other</option>`;
 
+    function courseOptions() {
+        if (!cachedFormData) return '<option value="">Loading…</option>';
+        return cachedFormData.courses.map(c =>
+            `<option value="${c.id}">${c.label}</option>`
+        ).join('');
+    }
+
+    function assignmentOptions() {
+        if (!cachedFormData) return '<option value="">Loading…</option>';
+        return cachedFormData.assignments.map(a =>
+            `<option value="${a.id}">${a.label}</option>`
+        ).join('');
+    }
+
     function renderFormFields(type) {
         formStatus.textContent = '';
         if (type === 'grading_weight') {
             formFields.innerHTML = `
                 <div class="ca-form-group">
-                    <span>Course ID</span>
-                    <input class="ca-fi" type="number" id="ca-f-course-id" placeholder="e.g. 172956">
+                    <span>Course</span>
+                    <select class="ca-fi" id="ca-f-course-id">${courseOptions()}</select>
                 </div>
                 <div class="ca-form-group">
                     <span>Category</span>
@@ -481,8 +520,8 @@
         } else if (type === 'late_policy') {
             formFields.innerHTML = `
                 <div class="ca-form-group">
-                    <span>Course ID</span>
-                    <input class="ca-fi" type="number" id="ca-f-course-id" placeholder="e.g. 172956">
+                    <span>Course</span>
+                    <select class="ca-fi" id="ca-f-course-id">${courseOptions()}</select>
                 </div>
                 <div class="ca-form-group">
                     <label class="ca-fi-check">
@@ -500,11 +539,11 @@
         } else if (type === 'assignment_category') {
             formFields.innerHTML = `
                 <div class="ca-form-group">
-                    <span>Assignment ID</span>
-                    <input class="ca-fi" type="number" id="ca-f-assignment-id" placeholder="e.g. 123456">
+                    <span>Assignment</span>
+                    <select class="ca-fi" id="ca-f-assignment-id">${assignmentOptions()}</select>
                 </div>
                 <div class="ca-form-group">
-                    <span>Category</span>
+                    <span>Correct category</span>
                     <select class="ca-fi" id="ca-f-category">${CATEGORY_OPTIONS}</select>
                 </div>`;
         } else {
@@ -584,6 +623,24 @@
             inputArea.style.display = 'none';
             formPanel.classList.add('ca-form-visible');
             editBtn.style.color = 'white';
+            // Fetch course/assignment lists once, then re-render the current type
+            if (!cachedFormData) {
+                GM_xmlhttpRequest({
+                    method: 'GET',
+                    url: FORM_DATA_URL,
+                    onload: (res) => {
+                        try {
+                            cachedFormData = JSON.parse(res.responseText);
+                        } catch (e) {
+                            cachedFormData = { courses: [], assignments: [] };
+                        }
+                        if (formType.value) renderFormFields(formType.value);
+                    },
+                    onerror: () => {
+                        cachedFormData = { courses: [], assignments: [] };
+                    },
+                });
+            }
         } else {
             messagesEl.style.display = '';
             inputArea.style.display = '';
