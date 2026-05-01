@@ -72,6 +72,7 @@ When using syllabus data (grading weights, late policies):
   - source "user_override" → say "based on your correction"
 - If sources differ across categories, note each one individually.
 - If no late policy is found, say so and advise the student to check Canvas directly.
+- When mentioning a specific assignment or course, always include its canvas_link so the student can navigate there directly.
 
 Be direct and practical. Students want actionable answers, not instructions to go look things up themselves."""
 
@@ -159,7 +160,7 @@ def execute_tool(name: str, arguments: dict) -> str:
                 "category": a.category.value if a.category else None,
                 "has_submitted": a.has_submitted,
                 "is_locked": a.is_locked,
-                "html_url": a.html_url,
+                "canvas_link": a.html_url,
                 "confidence": a.confidence,
             }
             for a in assignments
@@ -179,7 +180,14 @@ def execute_tool(name: str, arguments: dict) -> str:
 
     elif name == "get_all_courses":
         data = store.load_student_data(STUDENT_ID)
-        return json.dumps(data.to_dict(), indent=2)
+        d = data.to_dict()
+        for c in d.get("courses", []):
+            if "html_url" in c:
+                c["canvas_link"] = c.pop("html_url")
+        for a in d.get("assignments", []):
+            if "html_url" in a:
+                a["canvas_link"] = a.pop("html_url")
+        return json.dumps(d, indent=2)
 
     elif name == "get_course_info":
         course_id = arguments.get("course_id")
@@ -194,7 +202,7 @@ def execute_tool(name: str, arguments: dict) -> str:
             "id": course.id,
             "name": course.name,
             "code": course.code,
-            "html_url": course.html_url,
+            "canvas_link": course.html_url,
             "has_syllabus": course.syllabus is not None,
         }
         if course.syllabus:
@@ -273,38 +281,48 @@ def run_chat_turn(session_id: str, message) -> str:
     """Send a message and run the agentic tool loop. Returns final text reply."""
     if session_id not in sessions:
         sessions[session_id] = gemini_client.chats.create(
-            model="gemini-2.5-flash-lite",
+            model="gemini-2.5-flash",
             config=CHAT_CONFIG,
         )
 
     chat_obj = sessions[session_id]
-    response = chat_obj.send_message(message)
+    try:
+        response = chat_obj.send_message(message)
 
-    while True:
-        parts = response.candidates[0].content.parts
-        function_calls = [
-            p.function_call for p in parts
-            if p.function_call and p.function_call.name
-        ]
+        for _ in range(10):  # cap tool loop to prevent runaway calls
+            candidate = response.candidates[0] if response.candidates else None
+            parts = (candidate.content.parts if candidate and candidate.content else None) or []
+            function_calls = [
+                p.function_call for p in parts
+                if p.function_call and p.function_call.name
+            ]
 
-        if not function_calls:
-            return " ".join(p.text for p in parts if p.text).strip()
+            if not function_calls:
+                text = " ".join(p.text for p in parts if p.text).strip()
+                return text or "I wasn't able to generate a response. Please try again."
 
-        function_responses = []
-        for fc in function_calls:
-            try:
-                result = execute_tool(fc.name, dict(fc.args))
-            except Exception as e:
-                result = json.dumps({"error": str(e)})
+            function_responses = []
+            for fc in function_calls:
+                try:
+                    result = execute_tool(fc.name, dict(fc.args))
+                except Exception as e:
+                    result = json.dumps({"error": str(e)})
 
-            function_responses.append(
-                types.Part.from_function_response(
-                    name=fc.name,
-                    response={"result": result},
+                function_responses.append(
+                    types.Part.from_function_response(
+                        name=fc.name,
+                        response={"result": result},
+                    )
                 )
-            )
 
-        response = chat_obj.send_message(function_responses)
+            response = chat_obj.send_message(function_responses)
+
+        return "I wasn't able to complete the request. Please try again."
+
+    except Exception:
+        # Drop the broken session so the next request starts fresh
+        sessions.pop(session_id, None)
+        raise
 
 
 async def manual_update(request: Request) -> JSONResponse:
@@ -331,6 +349,24 @@ async def manual_update(request: Request) -> JSONResponse:
         return JSONResponse({"error": str(e)}, status_code=500)
 
 
+async def form_data(request: Request) -> JSONResponse:
+    """Return courses and assignments so the UI can populate dropdowns."""
+    data = store.load_student_data(STUDENT_ID)
+    courses = [
+        {"id": c.id, "label": f"{c.code} — {c.name}"}
+        for c in sorted(data.courses.values(), key=lambda c: c.code or "")
+    ]
+    assignments = [
+        {
+            "id": a.id,
+            "label": f"{data.courses[a.course_id].code if a.course_id in data.courses else '?'}: {a.name}",
+            "course_id": a.course_id,
+        }
+        for a in sorted(data.assignments.values(), key=lambda a: a.name)
+    ]
+    return JSONResponse({"courses": courses, "assignments": assignments})
+
+
 async def chat(request: Request) -> JSONResponse:
     body = await request.json()
     message = (body.get("message") or "").strip()
@@ -346,10 +382,11 @@ async def chat(request: Request) -> JSONResponse:
 app = Starlette(routes=[
     Route("/chat", chat, methods=["POST"]),
     Route("/manual-update", manual_update, methods=["POST"]),
+    Route("/form-data", form_data, methods=["GET"]),
 ])
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_methods=["POST", "OPTIONS"],
+    allow_methods=["GET", "POST", "OPTIONS"],
     allow_headers=["*"],
 )
