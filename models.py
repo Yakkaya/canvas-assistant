@@ -156,7 +156,7 @@ class Assignment:
             grading_type=data.get("grading_type", "points"),
             omit_from_final_grade=data.get("omit_from_final_grade", False),
             submission_types=submission_types,
-            has_submitted=data.get("has_submitted_submissions", False),
+            has_submitted=_student_has_submitted(data.get("submission")),
             is_locked=data.get("locked_for_user", False),
             lock_explanation=data.get("lock_explanation"),
             description_html=data.get("description"),
@@ -164,6 +164,23 @@ class Assignment:
             is_quiz=data.get("is_quiz_assignment", False),
             quiz_id=data.get("quiz_id"),
         )
+
+
+def _student_has_submitted(submission: Optional[dict]) -> bool:
+    """Whether the requesting student has submitted, from the Canvas `submission` object.
+
+    Requires `include[]=submission`. (`has_submitted_submissions` on the
+    assignment means *any* student has submitted, so it is not used.)
+    """
+    if not submission:
+        return False
+    if submission.get("submitted_at"):
+        return True
+    state = submission.get("workflow_state")
+    if state in ("submitted", "pending_review"):
+        return True
+    # Graded without a submission (e.g. paper exams) counts as done, unless marked missing
+    return state == "graded" and not submission.get("missing", False)
 
 
 @dataclass

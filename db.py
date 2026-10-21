@@ -35,9 +35,13 @@ load_dotenv()
 class MongoStore:
     """MongoDB storage for Canvas student assistant."""
 
-    def __init__(self, uri: str = None, db_name: str = "canvas_assistant"):
-        self.client = MongoClient(uri or os.getenv("MONGO_URI", "mongodb://localhost:27017"))
-        self.db = self.client[db_name]
+    def __init__(self, uri: str = None, db_name: str = None):
+        # tz_aware: return stored datetimes as UTC-aware instead of naive
+        self.client = MongoClient(
+            uri or os.getenv("MONGO_URI", "mongodb://localhost:27017"), tz_aware=True
+        )
+        # MONGO_DB_NAME lets the servers run against a separate test database
+        self.db = self.client[db_name or os.getenv("MONGO_DB_NAME", "canvas_assistant")]
 
         # Collections
         self.courses: Collection = self.db["courses"]
@@ -169,7 +173,11 @@ class MongoStore:
     # =========================================================================
 
     def save_course(self, course: Course, quarter: str = "") -> None:
-        """Upsert course data. Syllabus included if present."""
+        """Upsert course data. Syllabus included if present.
+
+        Student corrections (USER_OVERRIDE grading categories and late policy)
+        already stored for the course are kept over freshly parsed values.
+        """
         doc = {
             "_id": course.id,
             "name": course.name,
@@ -179,9 +187,34 @@ class MongoStore:
             "updated_at": datetime.now(timezone.utc),
         }
         if course.syllabus:
-            doc["syllabus"] = self._syllabus_to_doc(course.syllabus)
+            existing = self.courses.find_one({"_id": course.id}, {"syllabus": 1}) or {}
+            doc["syllabus"] = self._keep_overrides(
+                self._syllabus_to_doc(course.syllabus), existing.get("syllabus")
+            )
 
         self.courses.update_one({"_id": course.id}, {"$set": doc}, upsert=True)
+
+    @staticmethod
+    def _keep_overrides(new_syllabus: dict, old_syllabus: Optional[dict]) -> dict:
+        """Carry USER_OVERRIDE values from the stored syllabus into a freshly parsed one."""
+        if not old_syllabus:
+            return new_syllabus
+        override = DataSource.USER_OVERRIDE.value
+
+        kept = [
+            gc for gc in old_syllabus.get("grading_categories", [])
+            if gc.get("source") == override
+        ]
+        kept_cats = {gc["assignment_category"] for gc in kept}
+        new_syllabus["grading_categories"] = [
+            gc for gc in new_syllabus["grading_categories"]
+            if gc["assignment_category"] not in kept_cats
+        ] + kept
+
+        old_lp = old_syllabus.get("late_policy")
+        if old_lp and old_lp.get("source") == override:
+            new_syllabus["late_policy"] = old_lp
+        return new_syllabus
 
     def get_course(self, course_id: int) -> Optional[Course]:
         """Load course from DB, including syllabus if present."""
@@ -252,9 +285,23 @@ class MongoStore:
     # =========================================================================
 
     def save_assignments(self, student_id: str, assignments: list[Assignment]) -> None:
-        """Bulk upsert assignments for a student."""
+        """Bulk upsert assignments for a student.
+
+        Assignments the student re-categorized keep their corrected category;
+        all other fields are refreshed.
+        """
+        overridden = {
+            d["assignment_id"]
+            for d in self.assignments.find(
+                {"student_id": student_id, "source": DataSource.USER_OVERRIDE.value},
+                {"assignment_id": 1},
+            )
+        }
         for a in assignments:
             doc = self._assignment_to_doc(a, student_id)
+            if a.id in overridden:
+                for key in ("category", "confidence", "source"):
+                    doc.pop(key)
             self.assignments.update_one(
                 {"student_id": student_id, "assignment_id": a.id},
                 {"$set": doc},

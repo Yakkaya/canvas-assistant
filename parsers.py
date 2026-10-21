@@ -292,10 +292,11 @@ def _extract_late_policy(text: str) -> Optional[LatePolicy]:
     text_lower = text.lower()
 
     # Check for no late work allowed
-    if re.search(r"no late (work|submissions?|assignments?)", text_lower):
+    no_late = re.search(r"no late (work|submissions?|assignments?)", text_lower)
+    if no_late:
         return LatePolicy(
             allows_late=False,
-            raw_text=_extract_context(text, "late", 200),
+            raw_text=_context_at(text, no_late.start(), 200),
             confidence=4,
         )
 
@@ -306,22 +307,26 @@ def _extract_late_policy(text: str) -> Optional[LatePolicy]:
     )
     if penalty_match:
         penalty = float(penalty_match.group(1))
-        if "%" not in penalty_match.group(0):
-            penalty = penalty / 100  # Assume percentage
+        # "10% per day" / "0.5% per day" are percentages; a bare number is a
+        # percentage if > 1 ("10 per day") and otherwise a fraction ("0.1 per day")
+        if "%" in penalty_match.group(0) or penalty > 1:
+            penalty = penalty / 100
 
         return LatePolicy(
             allows_late=True,
-            penalty_per_day=penalty / 100 if penalty > 1 else penalty,
+            penalty_per_day=penalty,
             penalty_type="percentage",
-            raw_text=_extract_context(text, "late", 200),
+            raw_text=_context_at(text, penalty_match.start(), 200),
             confidence=3,
         )
 
-    # If "late" mentioned but no clear policy, flag it
-    if "late" in text_lower:
+    # If "late" is mentioned as a word (not inside "conflate", "template", ...)
+    # but no clear policy was found, flag it
+    late_word = re.search(r"\blate\b", text_lower)
+    if late_word:
         return LatePolicy(
             allows_late=True,  # Assume yes unless explicitly stated
-            raw_text=_extract_context(text, "late", 200),
+            raw_text=_context_at(text, late_word.start(), 200),
             confidence=2,
         )
 
@@ -348,13 +353,8 @@ def _extract_dates(text: str) -> list[SyllabusDate]:
     return dates  # Return empty for now - this needs more sophisticated parsing
 
 
-def _extract_context(text: str, keyword: str, chars: int = 200) -> str:
-    """Extract text surrounding a keyword for context."""
-    text_lower = text.lower()
-    idx = text_lower.find(keyword.lower())
-    if idx == -1:
-        return ""
-
+def _context_at(text: str, idx: int, chars: int = 200) -> str:
+    """Extract text surrounding a position for context."""
     start = max(0, idx - chars // 2)
     end = min(len(text), idx + chars // 2)
     return text[start:end].strip()
@@ -449,6 +449,12 @@ def parse_syllabus_pdf(
 
     syllabus.late_policy = _extract_late_policy(text)
     syllabus.important_dates = _extract_dates(text)
+
+    # The text helpers default to SYLLABUS_HTML; stamp the real provenance
+    for gc in syllabus.grading_categories:
+        gc.source = DataSource.SYLLABUS_PDF
+    if syllabus.late_policy:
+        syllabus.late_policy.source = DataSource.SYLLABUS_PDF
 
     return syllabus
 

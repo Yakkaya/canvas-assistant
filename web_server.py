@@ -4,6 +4,10 @@ Web server for the Canvas Assistant chatbot UI.
 Provides a /chat HTTP endpoint that the Tampermonkey widget calls.
 Each session gets a persistent Gemini Chat object stored in memory.
 
+Every chat turn (message, tool calls with arguments and results, reply) is
+appended as one JSON line to AGENT_LOG_PATH (default eval/logs/agent_turns.jsonl)
+so agent behavior can be reviewed after the fact.
+
 Run with:
   uvicorn web_server:app --port 8000
 """
@@ -12,6 +16,7 @@ import asyncio
 import json
 import os
 import sys
+import time
 import uuid
 from datetime import datetime, timezone
 
@@ -28,11 +33,16 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, _HERE)
 load_dotenv(os.path.join(_HERE, ".env"))
 
-import canvas_api
-import parsers
 from db import MongoStore
+from prompts import SYSTEM_PROMPT, stamp_message
+from tools import execute_tool
 
 STUDENT_ID = "self"
+# Built on gemini-2.5-flash; that model is no longer available to new API keys
+MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+AGENT_LOG_PATH = os.getenv(
+    "AGENT_LOG_PATH", os.path.join(_HERE, "eval", "logs", "agent_turns.jsonl")
+)
 store = MongoStore()
 
 api_key = os.getenv("GEMINI_API_KEY")
@@ -43,47 +53,6 @@ gemini_client = genai.Client(api_key=api_key)
 
 # session_id -> Gemini Chat object (manages its own history internally)
 sessions: dict[str, any] = {}
-
-SYSTEM_PROMPT = f"""You are a student assistant for a Cal Poly student using Canvas LMS.
-You have access to tools that fetch the student's assignments, todos, and course information from Canvas.
-
-Today's date: {datetime.now(timezone.utc).strftime("%A, %B %d, %Y")} (UTC / Pacific time is 8 hours behind)
-
-Your role is to help the student prioritize their work and answer questions like:
-- "What should I work on this week?"
-- "Which course needs the most attention right now?"
-- "Is it better to focus on my midterm or my project?"
-- "What's due tomorrow?"
-- "Is it worth submitting late?"
-
-IMPORTANT RULES:
-- Always use your tools to look up data before answering. Do NOT tell the student to "check the syllabus themselves" — that's your job.
-- When asked about late policies, call get_course_info for the relevant course and report what you find.
-- When asked to prioritize, call get_upcoming_assignments and get_all_courses, then give a specific recommendation.
-- Never refuse to give advice. Always make a best-effort recommendation with the data available.
-
-When using syllabus data (grading weights, late policies):
-- Confidence is rated 1–5 (5 = from Canvas directly or a structured PDF table, 1 = guessed).
-- If a confidence score is 3 or below, note that the data may not be fully accurate.
-- Always tell the student where the information came from, using plain language:
-  - source "canvas_api" → say "from Canvas"
-  - source "syllabus_html" → say "from the course syllabus"
-  - source "syllabus_pdf" → say "from the syllabus PDF"
-  - source "user_override" → say "based on your correction"
-- If sources differ across categories, note each one individually.
-- If no late policy is found, say so and advise the student to check Canvas directly.
-- When mentioning a specific assignment or course, always include its canvas_link so the student can navigate there directly.
-
-Be direct and practical. Students want actionable answers, not instructions to go look things up themselves."""
-
-TYPE_MAP = {
-    "string": types.Type.STRING,
-    "integer": types.Type.INTEGER,
-    "number": types.Type.NUMBER,
-    "boolean": types.Type.BOOLEAN,
-    "array": types.Type.ARRAY,
-    "object": types.Type.OBJECT,
-}
 
 TOOL_DEFINITIONS = [
     types.FunctionDeclaration(
@@ -145,149 +114,49 @@ CHAT_CONFIG = types.GenerateContentConfig(
 )
 
 
-def execute_tool(name: str, arguments: dict) -> str:
-    """Execute a Canvas tool and return a JSON string result."""
-    if name == "get_upcoming_assignments":
-        days = int(arguments.get("days", 7))
-        assignments = store.get_upcoming_assignments(STUDENT_ID, days)
-        result = [
-            {
-                "id": a.id,
-                "name": a.name,
-                "course_id": a.course_id,
-                "due_at": a.due_at.isoformat() if a.due_at else None,
-                "points_possible": a.points_possible,
-                "category": a.category.value if a.category else None,
-                "has_submitted": a.has_submitted,
-                "is_locked": a.is_locked,
-                "canvas_link": a.html_url,
-                "confidence": a.confidence,
-            }
-            for a in assignments
-        ]
-        return json.dumps(result, indent=2)
-
-    elif name == "get_todo_items":
-        todos = store.get_todos(STUDENT_ID)
-        clean = []
-        for t in todos:
-            item = {k: v for k, v in t.items() if k != "_id"}
-            for k, v in item.items():
-                if isinstance(v, datetime):
-                    item[k] = v.isoformat()
-            clean.append(item)
-        return json.dumps(clean, indent=2)
-
-    elif name == "get_all_courses":
-        data = store.load_student_data(STUDENT_ID)
-        d = data.to_dict()
-        for c in d.get("courses", []):
-            if "html_url" in c:
-                c["canvas_link"] = c.pop("html_url")
-        for a in d.get("assignments", []):
-            if "html_url" in a:
-                a["canvas_link"] = a.pop("html_url")
-        return json.dumps(d, indent=2)
-
-    elif name == "get_course_info":
-        course_id = arguments.get("course_id")
-        if not course_id:
-            return json.dumps({"error": "course_id is required"})
-        course = store.get_course(int(course_id))
-        if not course:
-            return json.dumps({
-                "error": f"Course {course_id} not found. Try refresh_canvas_data first."
-            })
-        result = {
-            "id": course.id,
-            "name": course.name,
-            "code": course.code,
-            "canvas_link": course.html_url,
-            "has_syllabus": course.syllabus is not None,
-        }
-        if course.syllabus:
-            s = course.syllabus
-            result["grading_categories"] = [
-                {
-                    "name": gc.name,
-                    "category": gc.assignment_category.value,
-                    "weight": gc.weight,
-                    "weight_pct": f"{gc.weight * 100:.0f}%",
-                    "confidence": gc.confidence,
-                    "source": gc.source.value,
-                }
-                for gc in s.grading_categories
-            ]
-            if s.late_policy:
-                lp = s.late_policy
-                result["late_policy"] = {
-                    "allows_late": lp.allows_late,
-                    "penalty_per_day": lp.penalty_per_day,
-                    "max_days_late": lp.max_days_late,
-                    "raw_text": lp.raw_text,
-                    "confidence": lp.confidence,
-                }
-        return json.dumps(result, indent=2)
-
-    elif name == "refresh_canvas_data":
-        try:
-            # Fetch todo items (pending submissions)
-            raw = canvas_api.get_user_todo()
-            data = parsers.load_and_parse_todos(raw)
-            store.save_student(STUDENT_ID, os.getenv("CANVAS_TOKEN", ""), "Student")
-
-            # Fetch all enrolled courses and their upcoming assignments
-            all_courses = canvas_api.get_courses()
-            for course_raw in all_courses:
-                course_id = course_raw["id"]
-                course = parsers.parse_course(course_raw)
-                data.add_course(course)
-
-                try:
-                    for a_raw in canvas_api.get_course_assignments(course_id):
-                        assignment = parsers.parse_assignment(a_raw)
-                        data.add_assignment(assignment)
-                except Exception:
-                    pass
-
-            parsers.enrich_assignment_categories(data)
-
-            syllabi_parsed = 0
-            for course_id, course in data.courses.items():
-                try:
-                    course_data = canvas_api.get_course(course_id)
-                    syllabus_html = course_data.get("syllabus_body") or ""
-                    if syllabus_html.strip():
-                        course.syllabus = parsers.parse_syllabus_html(syllabus_html, course_id)
-                        syllabi_parsed += 1
-                except Exception:
-                    pass
-            store.save_student_data(STUDENT_ID, data)
-            return json.dumps({
-                "status": "success",
-                "courses_refreshed": len(data.courses),
-                "syllabi_parsed": syllabi_parsed,
-                "assignments_refreshed": len(data.assignments),
-                "todos_refreshed": len(data.todo_items),
-                "refreshed_at": datetime.now(timezone.utc).isoformat(),
-            })
-        except Exception as e:
-            return json.dumps({"status": "error", "message": str(e)})
-
-    return json.dumps({"error": f"Unknown tool: {name}"})
+def log_turn(record: dict) -> None:
+    """Append one chat turn to the agent log. Logging failures never break chat."""
+    try:
+        os.makedirs(os.path.dirname(AGENT_LOG_PATH), exist_ok=True)
+        with open(AGENT_LOG_PATH, "a") as f:
+            f.write(json.dumps(record, default=str) + "\n")
+    except OSError:
+        pass
 
 
-def run_chat_turn(session_id: str, message) -> str:
+def add_usage(record: dict, response) -> None:
+    """Accumulate billed tokens (thinking tokens are billed as output)."""
+    u = getattr(response, "usage_metadata", None)
+    if u:
+        record["usage"]["input_tokens"] += u.prompt_token_count or 0
+        record["usage"]["output_tokens"] += (u.candidates_token_count or 0) + (u.thoughts_token_count or 0)
+
+
+def run_chat_turn(session_id: str, message: str) -> str:
     """Send a message and run the agentic tool loop. Returns final text reply."""
-    if session_id not in sessions:
-        sessions[session_id] = gemini_client.chats.create(
-            model="gemini-2.5-flash",
-            config=CHAT_CONFIG,
-        )
+    new_session = session_id not in sessions
+    if new_session:
+        sessions[session_id] = gemini_client.chats.create(model=MODEL, config=CHAT_CONFIG)
+
+    record = {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "session_id": session_id,
+        "new_session": new_session,
+        "model": MODEL,
+        "message": message,
+        "tool_calls": [],
+        "model_rounds": 0,
+        "reply": None,
+        "error": None,
+        "usage": {"input_tokens": 0, "output_tokens": 0},
+    }
+    started = time.monotonic()
 
     chat_obj = sessions[session_id]
     try:
-        response = chat_obj.send_message(message)
+        response = chat_obj.send_message(stamp_message(message))
+        add_usage(record, response)
+        record["model_rounds"] = 1
 
         for _ in range(10):  # cap tool loop to prevent runaway calls
             candidate = response.candidates[0] if response.candidates else None
@@ -299,15 +168,22 @@ def run_chat_turn(session_id: str, message) -> str:
 
             if not function_calls:
                 text = " ".join(p.text for p in parts if p.text).strip()
-                return text or "I wasn't able to generate a response. Please try again."
+                record["reply"] = text or "I wasn't able to generate a response. Please try again."
+                return record["reply"]
 
             function_responses = []
             for fc in function_calls:
+                args = dict(fc.args or {})
                 try:
-                    result = execute_tool(fc.name, dict(fc.args))
+                    result = execute_tool(store, STUDENT_ID, fc.name, args)
                 except Exception as e:
                     result = json.dumps({"error": str(e)})
-
+                record["tool_calls"].append({
+                    "round": record["model_rounds"],
+                    "name": fc.name,
+                    "args": args,
+                    "result": result,
+                })
                 function_responses.append(
                     types.Part.from_function_response(
                         name=fc.name,
@@ -316,13 +192,21 @@ def run_chat_turn(session_id: str, message) -> str:
                 )
 
             response = chat_obj.send_message(function_responses)
+            add_usage(record, response)
+            record["model_rounds"] += 1
 
-        return "I wasn't able to complete the request. Please try again."
+        record["reply"] = "I wasn't able to complete the request. Please try again."
+        record["error"] = "tool loop limit reached"
+        return record["reply"]
 
-    except Exception:
+    except Exception as e:
+        record["error"] = repr(e)
         # Drop the broken session so the next request starts fresh
         sessions.pop(session_id, None)
         raise
+    finally:
+        record["duration_s"] = round(time.monotonic() - started, 2)
+        log_turn(record)
 
 
 async def manual_update(request: Request) -> JSONResponse:

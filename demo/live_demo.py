@@ -8,9 +8,11 @@ This script demonstrates:
 4. Combining everything into LLM-ready context with source links
 
 Run: python demo/live_demo.py
+Steps 2 and 3 need DEMO_SYLLABUS_URL and DEMO_SYLLABUS_FILE_ID set; otherwise they are skipped.
 """
 
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -57,11 +59,14 @@ def demo_html_parsing():
     print("2. HTML SYLLABUS PARSING")
     print("=" * 60)
 
-    url = "https://example.edu/syllabus/"
+    url = os.getenv("DEMO_SYLLABUS_URL")
+    if not url:
+        print("\n[!] Set DEMO_SYLLABUS_URL to a syllabus web page to run this demo.")
+        return None
     print(f"\nFetching: {url}")
 
     r = requests.get(url, timeout=20)
-    syllabus = parse_syllabus_html(r.text, course_id=10001)
+    syllabus = parse_syllabus_html(r.text, course_id=0)
 
     print(f"\nGrading breakdown ({len(syllabus.grading_categories)} categories):")
     total = 0
@@ -84,13 +89,16 @@ def demo_pdf_parsing():
     print("3. PDF SYLLABUS PARSING")
     print("=" * 60)
 
-    file_id = 10003  # STAT-331 syllabus
+    file_id = os.getenv("DEMO_SYLLABUS_FILE_ID")  # Canvas file ID of a syllabus PDF
+    if not file_id:
+        print("\n[!] Set DEMO_SYLLABUS_FILE_ID to a Canvas syllabus PDF's file ID to run this demo.")
+        return None
     print(f"\nDownloading Canvas file {file_id}...")
 
     pdf_bytes = get_file(file_id)
     print(f"Downloaded {len(pdf_bytes):,} bytes")
 
-    syllabus = parse_syllabus_pdf(pdf_bytes, course_id=10002)
+    syllabus = parse_syllabus_pdf(pdf_bytes, course_id=0)
 
     print(f"\nGrading breakdown ({len(syllabus.grading_categories)} categories):")
     total = 0

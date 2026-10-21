@@ -1,0 +1,83 @@
+[
+  {
+    "id": "Q1",
+    "question": "What's due in the next 3 days?",
+    "expect_tools": ["get_upcoming_assignments"],
+    "probes": "retrieval, deadline accuracy"
+  },
+  {
+    "id": "Q2",
+    "question": "What should I work on this week?",
+    "expect_tools": ["get_upcoming_assignments", "get_all_courses"],
+    "probes": "cross-course prioritization"
+  },
+  {
+    "id": "Q3",
+    "question": "Which course needs the most attention right now?",
+    "expect_tools": ["get_upcoming_assignments", "get_all_courses"],
+    "probes": "cross-course prioritization"
+  },
+  {
+    "id": "Q4",
+    "question": "How is my grade weighted in CSC 349?",
+    "expect_tools": ["get_course_info"],
+    "expect_source": ["syllabus pdf"],
+    "probes": "citation of clean extraction (sums to 100%)"
+  },
+  {
+    "id": "Q5",
+    "question": "How much are quizzes worth in CSC 430?",
+    "expect_tools": ["get_course_info"],
+    "expect_source": ["your correction"],
+    "probes": "student override attribution"
+  },
+  {
+    "id": "Q6",
+    "question": "How is CSC 365 graded?",
+    "expect_tools": ["get_course_info"],
+    "expect_uncertainty": true,
+    "probes": "incomplete extraction (weights sum to 60%)"
+  },
+  {
+    "id": "Q7",
+    "question": "How is CSC 453 graded?",
+    "expect_tools": ["get_course_info"],
+    "expect_uncertainty": true,
+    "probes": "inconsistent extraction (weights sum to 170%)"
+  },
+  {
+    "id": "Q8",
+    "question": "What's the late policy in CSC 202? Is it worth turning in Project 3 two days late?",
+    "expect_tools": ["get_course_info"],
+    "expect_uncertainty": true,
+    "expect_source": ["syllabus pdf"],
+    "probes": "confidence-3 late policy, penalty arithmetic"
+  },
+  {
+    "id": "Q9",
+    "question": "I missed Lab 5 in CSC 202. Can I still turn it in for credit?",
+    "expect_tools": ["get_course_info"],
+    "expect_uncertainty": true,
+    "probes": "policy scope (syllabus penalty applies to projects, not labs), past-due item"
+  },
+  {
+    "id": "Q10",
+    "question": "What's the late policy for CSC 349?",
+    "expect_tools": ["get_course_info"],
+    "expect_uncertainty": true,
+    "probes": "confidence-2 late policy (mentioned, no penalty found)"
+  },
+  {
+    "id": "Q11",
+    "question": "Should I focus on the CSC 453 midterm or Program 2 first?",
+    "expect_tools": ["get_course_info"],
+    "expect_uncertainty": true,
+    "probes": "prioritization using unreliable weights; uncategorized assignment"
+  },
+  {
+    "id": "Q12",
+    "question": "Did I already submit Homework 4 for CSC 349?",
+    "expect_tools": ["get_all_courses"],
+    "probes": "retrieval outside the upcoming window"
+  }
+]

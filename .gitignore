@@ -1,2 +1,18 @@
 .env
 venv/
+.DS_Store
+.vscode/
+__pycache__/
+*.pyc
+
+# Syllabi and data derived from them (instructors' documents; not ours to publish)
+full_syllabi_set/
+example_syllabi/
+eval/output/
+eval/ground_truth/
+
+# Personal Canvas data and local tooling
+demo/raw_todo.json
+raw_todo.json
+eval/.bin/
+eval/logs/
